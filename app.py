@@ -21,39 +21,40 @@ def fetch_and_parse_ts():
                 continue
                 
             content = resp.text
-            # Teile den Text an jedem "name:"
-            blocks = re.split(r'(?m)^\s*(?:["\']?name["\']?)\s*:\s*', content)
+            
+            # Wir splitten jetzt einfach bei jedem Vorkommen von 'name:', 
+            # egal ob am Zeilenanfang oder mitten im Text.
+            blocks = re.split(r'name\s*:\s*', content)
             
             for block in blocks[1:]:
-                # 1. Name
-                name_match = re.search(r'^([\'"`])(.*?)\1', block)
+                # 1. Name: Erster Text in Anführungszeichen nach dem Split
+                name_match = re.search(r'[\'"`](.*?)[\'"`]', block)
                 if not name_match: continue
-                name = name_match.group(2).strip()
+                name = name_match.group(1).strip()
                 
-                # 2. Replaces (Extrem flexibel: Array [] oder einzelner String)
+                # 2. Replaces: Sucht nach dem Inhalt von eckigen Klammern ODER Anführungszeichen
                 replaces_str = ""
-                # Suche nach [ ... ]
-                rep_array_match = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
-                if rep_array_match:
-                    items = re.findall(r'[\'"`](.*?)[\'"`]', rep_array_match.group(1))
+                rep_match = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
+                if rep_match:
+                    items = re.findall(r'[\'"`](.*?)[\'"`]', rep_match.group(1))
                     replaces_str = ", ".join(items)
                 else:
-                    # Suche nach einfachem String "..."
-                    rep_single_match = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
-                    if rep_single_match:
-                        replaces_str = rep_single_match.group(1)
+                    # Fallback auf einfachen String
+                    rep_single = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
+                    if rep_single:
+                        replaces_str = rep_single.group(1)
                 
-                # 3. Beschreibung (Dotall für Mehrzeiler)
+                # 3. Description: Sucht nach description: gefolgt von beliebigem Text in Anführungszeichen
                 desc_str = ""
-                desc_match = re.search(r'(?:description|desc|notes|info)\s*:\s*([\'"`])(.*?)\1', block, re.DOTALL | re.IGNORECASE)
+                desc_match = re.search(r'description\s*:\s*([\'"`])([\s\S]*?)\1', block)
                 if desc_match:
                     desc_str = re.sub(r'\s+', ' ', desc_match.group(2)).strip()
                 
                 # 4. URL
                 url_str = ""
-                url_match = re.search(r'(?:url|website|link)\s*:\s*([\'"`])(.*?)\1', block, re.IGNORECASE)
+                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', block, re.IGNORECASE)
                 if url_match:
-                    url_str = url_match.group(2).strip()
+                    url_str = url_match.group(1)
                 
                 all_alternatives.append({
                     "name": name,
@@ -61,23 +62,23 @@ def fetch_and_parse_ts():
                     "description": desc_str,
                     "url": url_str
                 })
-        except Exception as e:
-            st.error(f"Fehler: {e}")
+        except Exception:
+            continue
             
     return all_alternatives
 
 # --- UI ---
 st.title("🇪🇺 Digitaler Souveränitäts-Check")
-st.write("Live-Suche in den Daten von European Alternatives.")
+st.write("Durchsuche europäische Alternativen zu US-Software.")
 
 data = fetch_and_parse_ts()
 
 if data:
-    query = st.text_input("Suche nach Dienst (z.B. OneDrive, Outlook, WhatsApp, Cloud):", placeholder="Stichwort eingeben...")
+    query = st.text_input("Suche nach Dienst oder Schlagwort (z.B. OneDrive, Cloud, WhatsApp):", placeholder="Stichwort eingeben...")
 
     if query:
         q = query.lower().strip()
-        # ERWEITERTE SUCHE: Prüft jetzt Name, Replaces UND Beschreibung
+        # Die ultimative Suche: Findet den Begriff in JEDEM Feld
         results = [d for d in data if 
                    q in d["name"].lower() or 
                    q in d["replaces"].lower() or 
@@ -101,7 +102,7 @@ if data:
 
 with st.sidebar:
     st.header("Info")
-    st.write(f"Indexierte Dienste: **{len(data)}**")
+    st.write(f"Dienste in der Datenbank: **{len(data)}**")
     st.markdown("[Hauptprojekt (GitHub)](https://github.com/TheMorpheus407/european-alternatives)")
     st.markdown("[App-Quellcode](https://github.com/coolerfisch/european-alternatives-webapp/)")
     st.write("---")
