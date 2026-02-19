@@ -12,88 +12,81 @@ st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
 @st.cache_data(ttl=3600)
 def fetch_and_parse_ts():
     all_alternatives = []
-    debug_logs = []
     
     for file_name in FILES:
-        # Check both main and master branches
-        urls_to_try = [
-            f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/src/data/{file_name}",
-            f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/master/src/data/{file_name}"
-        ]
-        
-        content = None
-        used_url = None
-        for url in urls_to_try:
+        url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/src/data/{file_name}"
+        try:
             resp = requests.get(url)
-            if resp.status_code == 200:
-                content = resp.text
-                used_url = url
-                break
-        
-        if not content:
-            debug_logs.append(f"❌ {file_name}: 404 Not Found (Weder in main noch in master)")
-            continue
-            
-        debug_logs.append(f"✅ {file_name}: Erfolgreich geladen aus dem {used_url.split('/')[5]} branch")
-        
-        # Parsen des Inhalts durch Splitten an der geschweiften Klammer
-        blocks = content.split('{')
-        for block in blocks:
-            # Suche nach Name (akzeptiert einfache und doppelte Anfuehrungszeichen)
-            name_match = re.search(r'["\']?name["\']?\s*:\s*[\'"`](.*?)[\'"`]', block)
-            if not name_match:
+            if resp.status_code != 200:
                 continue
                 
-            name = name_match.group(1)
+            lines = resp.text.split('\n')
+            current_item = {}
+            in_replaces_array = False
             
-            # Suche nach replaces (Array oder einzelner String)
-            replaces_str = ""
-            replaces_match = re.search(r'["\']?replaces["\']?\s*:\s*\[(.*?)\]', block, re.DOTALL)
-            if replaces_match:
-                items = re.findall(r'[\'"`](.*?)[\'"`]', replaces_match.group(1))
-                replaces_str = ", ".join(items)
-            else:
-                rep_single = re.search(r'["\']?replaces["\']?\s*:\s*[\'"`](.*?)[\'"`]', block)
-                if rep_single:
-                    replaces_str = rep_single.group(1)
+            for line in lines:
+                line = line.strip()
+                
+                # 1. Name
+                name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
+                if name_match:
+                    # Vorheriges Element speichern, wenn ein neuer Name beginnt
+                    if 'name' in current_item:
+                        current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
+                        all_alternatives.append(current_item)
+                        current_item = {}
                     
-            # Suche nach description
-            desc_str = "Keine Beschreibung verfuegbar."
-            desc_match = re.search(r'["\']?description["\']?\s*:\s*[\'"`](.*?)[\'"`]', block, re.DOTALL)
-            if desc_match:
-                # Bereinigt eventuelle Zeilenumbrueche innerhalb der Beschreibung
-                desc_str = desc_match.group(1).replace('\n', ' ').strip()
+                    current_item['name'] = name_match.group(1)
+                    current_item['replaces_list'] = []
+                    current_item['description'] = "Keine Beschreibung verfügbar."
+                    current_item['url'] = ""
+                    continue
                 
-            # Suche nach url
-            url_str = ""
-            url_match = re.search(r'["\']?url["\']?\s*:\s*[\'"`](.*?)[\'"`]', block)
-            if url_match:
-                url_str = url_match.group(1)
+                # 2. Replaces Liste
+                if 'replaces' in line and '[' in line:
+                    inline_items = re.findall(r'[\'"`](.*?)[\'"`]', line[line.find('['):])
+                    if inline_items:
+                        current_item.setdefault('replaces_list', []).extend(inline_items)
+                    if ']' not in line:
+                        in_replaces_array = True
+                    continue
                 
-            all_alternatives.append({
-                "name": name,
-                "replaces": replaces_str,
-                "description": desc_str,
-                "url": url_str
-            })
+                if in_replaces_array:
+                    array_items = re.findall(r'[\'"`](.*?)[\'"`]', line)
+                    if array_items:
+                        current_item.setdefault('replaces_list', []).extend(array_items)
+                    if ']' in line:
+                        in_replaces_array = False
+                    continue
+                
+                # 3. Description
+                desc_match = re.search(r'description\s*:\s*[\'"`](.*?)[\'"`]', line)
+                if desc_match:
+                    current_item['description'] = desc_match.group(1)
+
+                # 4. URL
+                url_match = re.search(r'url\s*:\s*[\'"`](.*?)[\'"`]', line)
+                if url_match:
+                    current_item['url'] = url_match.group(1)
+
+            # Letztes Element der Datei abspeichern
+            if 'name' in current_item:
+                current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
+                all_alternatives.append(current_item)
+
+        except Exception as e:
+            st.error(f"Fehler beim Parsen von {file_name}: {e}")
             
-    return all_alternatives, debug_logs
+    return all_alternatives
 
 # --- User Interface ---
-st.title("Digitaler Souveraenitaets-Check")
+st.title("🇪🇺 Digitaler Souveränitäts-Check")
 st.write("Live-Anbindung an die Kataloge des European Alternatives Projekts.")
 
-data, logs = fetch_and_parse_ts()
-
-# Diagnose-Panel (oeffnet sich automatisch, wenn ein Fehler vorliegt)
-with st.expander("System-Diagnose", expanded=not bool(data)):
-    for log in logs:
-        st.write(log)
-    if not data:
-        st.error("Kritischer Fehler: Keine validen Datenstrukturen gefunden.")
+data = fetch_and_parse_ts()
 
 if not data:
-    st.warning("Verbindung fehlerhaft oder Datenstruktur leer. Bitte System-Diagnose pruefen.")
+    st.warning("Verbindung zu GitHub wird aufgebaut oder Datenstruktur ist leer...")
 else:
     query = st.text_input("Suche nach US-Dienst (z.B. WhatsApp, Gmail, Dropbox):", placeholder="Stichwort eingeben...")
 
@@ -114,7 +107,7 @@ else:
                         
                     st.divider()
         else:
-            st.info(f"Kein Treffer fuer '{query}'. Versuche es mit allgemeineren Begriffen.")
+            st.info(f"Kein Treffer für '{query}'. Versuche es mit allgemeineren Begriffen.")
 
 with st.sidebar:
     st.header("Über das Tool")
