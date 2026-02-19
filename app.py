@@ -26,12 +26,10 @@ def fetch_and_parse_ts():
             for line in lines:
                 line = line.strip()
                 
-                # 1. Suche nach dem Namen (akzeptiert ', " und `)
+                # 1. Suche nach dem Namen
                 name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
                 if name_match:
-                    # Sobald ein neuer Name auftaucht, speichern wir das vorherige Objekt ab
                     if 'name' in current_item:
-                        # Bereinige die replaces-Liste für die Anzeige
                         if 'replaces_list' in current_item:
                             current_item['replaces'] = ", ".join(current_item['replaces_list'])
                         else:
@@ -41,12 +39,12 @@ def fetch_and_parse_ts():
                     
                     current_item['name'] = name_match.group(1)
                     current_item['replaces_list'] = []
-                    current_item['description'] = "Keine Beschreibung verfügbar."
+                    current_item['description'] = "Keine Beschreibung verfuegbar."
+                    current_item['url'] = ""
                     continue
                 
                 # 2. Suche nach der "replaces" Liste
                 if 'replaces' in line and '[' in line:
-                    # Extrahiere direkt alle Begriffe, falls sie in derselben Zeile stehen
                     inline_items = re.findall(r'[\'"`](.*?)[\'"`]', line[line.find('['):])
                     if inline_items:
                         current_item.setdefault('replaces_list', []).extend(inline_items)
@@ -55,7 +53,7 @@ def fetch_and_parse_ts():
                         in_replaces_array = True
                     continue
                 
-                # 3. Wenn die Liste über mehrere Zeilen geht
+                # 3. Mehrzeilige Listen
                 if in_replaces_array:
                     array_items = re.findall(r'[\'"`](.*?)[\'"`]', line)
                     if array_items:
@@ -69,7 +67,12 @@ def fetch_and_parse_ts():
                 if desc_match:
                     current_item['description'] = desc_match.group(1)
 
-            # Das allerletzte Item der Datei noch hinzufügen
+                # 5. NEU: Suche nach der URL
+                url_match = re.search(r'url\s*:\s*[\'"`](.*?)[\'"`]', line)
+                if url_match:
+                    current_item['url'] = url_match.group(1)
+
+            # Letztes Item hinzufuegen
             if 'name' in current_item:
                 if 'replaces_list' in current_item:
                     current_item['replaces'] = ", ".join(current_item['replaces_list'])
@@ -83,21 +86,18 @@ def fetch_and_parse_ts():
     return all_alternatives
 
 # --- User Interface ---
-st.title("🇪🇺 Digitaler Souveränitäts-Check")
-st.write("Live-Anbindung an die TypeScript-Kataloge des European Alternatives Projekts.")
+st.title("Digitaler Souveraenitaets-Check")
+st.write("Live-Anbindung an die Kataloge des European Alternatives Projekts.")
 
-# Daten laden
 data = fetch_and_parse_ts()
 
 if not data:
     st.warning("Verbindung zu GitHub wird aufgebaut oder Datenstruktur ist leer...")
 else:
-    # Suchfeld
     query = st.text_input("Suche nach US-Dienst (z.B. WhatsApp, Gmail, Dropbox):", placeholder="Stichwort eingeben...")
 
     if query:
         q = query.lower().strip()
-        # Suche im Namen und in den ersetzten Diensten
         results = [d for d in data if q in d.get("replaces", "").lower() or q in d.get("name", "").lower()]
         
         if results:
@@ -107,13 +107,20 @@ else:
                     st.markdown(f"### {r['name']}")
                     st.write(f"**Ersetzt:** {r['replaces']}")
                     st.write(f"**Details:** {r['description']}")
+                    
+                    # NEU: Der klickbare Button, falls eine URL gefunden wurde
+                    if r.get('url'):
+                        st.link_button("Zur Webseite", r['url'])
+                        
                     st.divider()
         else:
-            st.info(f"Kein Treffer für '{query}'. Versuche es mit allgemeineren Begriffen.")
+            st.info(f"Kein Treffer fuer '{query}'. Versuche es mit allgemeineren Begriffen.")
 
 with st.sidebar:
     st.header("Über das Tool")
     st.write(f"Aktuell indexierte Dienste: **{len(data)}**")
-    st.write("Dieses Tool parst direkt den TypeScript-Quellcode des Projekts [European Alternatives](https://github.com/TheMorpheus407/european-alternatives).")
+    
+    # NEU: Korrekte Markdown-Syntax fuer funktionierende Links
+    st.markdown("Dieses Tool parst direkt den TypeScript-Quellcode des [European Alternatives](https://github.com/TheMorpheus407/european-alternatives) Projekts.")
     st.write("---")
     st.write("Mitwirkender: coolerfisch")
