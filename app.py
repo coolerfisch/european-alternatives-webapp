@@ -14,94 +14,74 @@ def fetch_and_parse_ts():
     all_alternatives = []
     
     for file_name in FILES:
-        url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/src/data/{file_name}"
-        try:
+        # Wir prüfen nacheinander main und master Branch
+        content = ""
+        for branch in ["main", "master"]:
+            url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/{branch}/src/data/{file_name}"
             resp = requests.get(url)
-            if resp.status_code != 200:
-                continue
-                
-            lines = resp.text.split('\n')
-            current_item = {}
-            in_replaces_array = False
+            if resp.status_code == 200:
+                content = resp.text
+                break
+        
+        if not content:
+            continue
             
-            for line in lines:
-                # 1. Name: Startet ein neues Objekt
-                name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
-                if name_match:
-                    if 'name' in current_item:
-                        # Vorheriges Element abschließen und speichern
-                        current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
-                        all_alternatives.append(current_item)
-                    
-                    # Neues Element initialisieren
-                    current_item = {
-                        'name': name_match.group(1),
-                        'replaces_list': [],
-                        'url': ''
-                    }
-                    in_replaces_array = False
-                    continue
-                
-                # 2. Replaces: Start der Liste oder Einzeiler
-                if 'replaces' in line and not in_replaces_array:
-                    # Finde den Doppelpunkt und nimm alle Strings in Anführungszeichen danach
-                    colon_idx = line.find(':')
-                    if colon_idx != -1:
-                        items = re.findall(r'[\'"`](.*?)[\'"`]', line[colon_idx:])
-                        current_item.setdefault('replaces_list', []).extend(items)
-                    
-                    # Prüfen, ob ein Array geöffnet, aber nicht geschlossen wird
-                    if '[' in line and ']' not in line:
-                        in_replaces_array = True
-                    continue
-                
-                # 3. Replaces: Mehrzeilige Arrays abarbeiten
-                if in_replaces_array:
-                    items = re.findall(r'[\'"`](.*?)[\'"`]', line)
-                    current_item.setdefault('replaces_list', []).extend(items)
-                    if ']' in line:
-                        in_replaces_array = False
-                    continue
-                
-                # 4. URL
-                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', line, re.IGNORECASE)
-                if url_match:
-                    current_item['url'] = url_match.group(1)
-
-            # Letztes Element der Datei speichern
-            if 'name' in current_item:
-                current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
-                all_alternatives.append(current_item)
-
-        except Exception as e:
-            st.error(f"Fehler beim Parsen von {file_name}: {e}")
+        # BRUTE FORCE: Wir suchen alle Blöcke zwischen { und } 
+        # die mindestens ein "name:" enthalten.
+        blocks = re.findall(r'\{[\s\S]*?name\s*:\s*[\'"`].*?[\'"`][\s\S]*?\}', content)
+        
+        for block in blocks:
+            # 1. Name extrahieren
+            name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', block)
+            if not name_match:
+                continue
+            name = name_match.group(1).strip()
+            
+            # 2. Replaces extrahieren
+            # Wir nehmen ALLES, was in Anführungszeichen steht, nachdem "replaces" auftaucht
+            replaces_list = []
+            replaces_part = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
+            if replaces_part:
+                # Mehrere Dienste in einer Liste
+                replaces_list = re.findall(r'[\'"`](.*?)[\'"`]', replaces_part.group(1))
+            else:
+                # Ein einzelner Dienst ohne Liste
+                single_rep = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
+                if single_rep:
+                    replaces_list = [single_rep.group(1)]
+            
+            # 3. URL extrahieren
+            url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', block, re.IGNORECASE)
+            url_val = url_match.group(1).strip() if url_match else ""
+            
+            all_alternatives.append({
+                "name": name,
+                "replaces": ", ".join(replaces_list),
+                "url": url_val
+            })
             
     return all_alternatives
 
-# --- UI ---
+# --- User Interface ---
 st.title("🇪🇺 Digitaler Souveränitäts-Check")
-st.write("Finde europäische Alternativen zu US-Software.")
+st.write("Direkt-Abfrage der europäischen Alternativen.")
 
 data = fetch_and_parse_ts()
 
 if data:
-    query = st.text_input("Suche nach US-Dienst (z.B. OneDrive, Outlook, WhatsApp):", placeholder="Stichwort eingeben...")
+    query = st.text_input("Suche (z.B. OneDrive, Outlook, WhatsApp):", placeholder="Stichwort...")
 
     if query:
         q = query.lower().strip()
-        # Suche durchsucht Name und Replaces
-        results = [d for d in data if 
-                   q in d["name"].lower() or 
-                   q in d["replaces"].lower()]
+        results = [d for d in data if q in d["name"].lower() or q in d["replaces"].lower()]
         
         if results:
-            st.success(f"{len(results)} Treffer gefunden:")
+            st.success(f"{len(results)} Treffer gefunden.")
             for r in results:
                 with st.container():
                     st.markdown(f"### {r['name']}")
                     if r['replaces']:
                         st.write(f"**Ersetzt:** {r['replaces']}")
-                    
                     if r['url']:
                         st.link_button("🌐 Zur Webseite", r['url'])
                     st.divider()
@@ -109,9 +89,8 @@ if data:
             st.info(f"Kein Treffer für '{query}'.")
 
 with st.sidebar:
-    st.header("Info")
-    st.write(f"Indexierte Dienste: **{len(data)}**")
-    st.markdown("[Hauptprojekt (GitHub)](https://github.com/TheMorpheus407/european-alternatives)")
-    st.markdown("[App-Quellcode](https://github.com/coolerfisch/european-alternatives-webapp/)")
+    st.header("Statistik")
+    st.write(f"Gefundene Dienste: **{len(data)}**")
     st.write("---")
+    st.markdown("[App-Quellcode](https://github.com/coolerfisch/european-alternatives-webapp/)")
     st.write("Mitwirkender: coolerfisch")
