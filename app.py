@@ -2,65 +2,85 @@ import streamlit as st
 import requests
 import re
 
-# Konfiguration
+# --- Konfiguration ---
 REPO_OWNER = "TheMorpheus407"
 REPO_NAME = "european-alternatives"
 FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
 
 st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
 
-def extract_ts_objects(text):
+# --- Claudes Parser-Logik ---
+def extract_top_level_objects(text: str) -> list[str]:
     """
-    Compiler-ähnlicher Tokenizer: Zählt geschweifte Klammern, um verschachtelte 
-    TypeScript-Objekte sicher und isoliert zu extrahieren.
+    Extrahiert alle Top-Level-Objekte { ... } aus dem TS-Array.
+    Robust gegen Verschachtelung, ignoriert Klammern in Strings.
     """
     objects = []
-    brace_level = 0
+    depth = 0
+    start = -1
     in_string = False
-    string_char = ''
-    current_obj = []
-    
-    # Finde den Start des Haupt-Arrays
-    start_idx = text.find('[')
-    if start_idx == -1: return []
-    
-    skip_next = False
-    
-    for char in text[start_idx:]:
-        if skip_next:
-            if brace_level > 0: current_obj.append(char)
-            skip_next = False
-            continue
-            
-        if char == '\\':
-            if brace_level > 0: current_obj.append(char)
-            skip_next = True
-            continue
+    string_char = None
+    i = 0
 
-        if char in ("'", '"', '`'):
-            if not in_string:
-                in_string = True
-                string_char = char
-            elif char == string_char:
+    while i < len(text):
+        char = text[i]
+
+        # String-Erkennung (einfach, doppelt, Backtick)
+        if not in_string and char in ('"', "'", '`'):
+            in_string = True
+            string_char = char
+        elif in_string:
+            if char == '\\':
+                i += 2  # Escape-Sequenz überspringen
+                continue
+            if char == string_char:
                 in_string = False
-            if brace_level > 0: current_obj.append(char)
-            continue
 
+        # Klammern nur außerhalb von Strings zählen
         if not in_string:
             if char == '{':
-                brace_level += 1
-            
-            if brace_level > 0:
-                current_obj.append(char)
-                
-            if char == '}':
-                brace_level -= 1
-                if brace_level == 0 and current_obj:
-                    # Ein vollständiges, isoliertes Objekt wurde gefunden
-                    objects.append("".join(current_obj))
-                    current_obj = []
-                    
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0 and start != -1:
+                    objects.append(text[start:i+1])
+                    start = -1
+        i += 1
+
     return objects
+
+def parse_value(raw: str) -> str:
+    """
+    Extrahiert den Wert aus einem rohen TS-Ausdruck.
+    Unterstützt Arrays und Strings. Ignoriert TS-Funktionen.
+    """
+    raw = raw.strip().rstrip(',')
+
+    # Array: ['a', 'b', "c"]
+    if raw.startswith('['):
+        items = re.findall(r'[\'"`]([^\'"`]+)[\'"`]', raw)
+        return ', '.join(items)
+
+    # Einfacher String
+    m = re.match(r'^[\'"`]([\s\S]*?)[\'"`]$', raw)
+    if m:
+        return m.group(1).strip()
+
+    return ""
+
+def parse_field(block: str, keys: list[str]) -> str:
+    """
+    Sucht nach einem der angegebenen Keys im Block und gibt den Wert zurück.
+    """
+    for key in keys:
+        # Key am Zeilenanfang, gefolgt von ':'
+        pattern = rf'^\s*{key}\s*:\s*(.+?)(?=,?\s*\n\s*\w+\s*:|,?\s*\n?\s*\}})'
+        m = re.search(pattern, block, re.MULTILINE | re.DOTALL)
+        if m:
+            return parse_value(m.group(1))
+    return ""
 
 @st.cache_data(ttl=3600)
 def fetch_and_parse_ts():
@@ -70,46 +90,28 @@ def fetch_and_parse_ts():
         url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/src/data/{file_name}"
         try:
             resp = requests.get(url)
-            if resp.status_code != 200:
-                continue
+            if resp.status_code == 200:
+                blocks = extract_top_level_objects(resp.text)
                 
-            text = resp.text
-            
-            # Zerlege den Code in saubere Blöcke mittels Tokenizer
-            blocks = extract_ts_objects(text)
-            
-            for block in blocks:
-                # 1. Name: Sucht nun sicher im isolierten Block
-                name_match = re.search(r'\bname\s*:\s*[\'"`](.*?)[\'"`]', block)
-                if not name_match:
-                    continue
-                name = name_match.group(1).strip()
-                
-                # 2. Replaces: Greift Arrays oder Einzelstrings
-                replaces_str = ""
-                rep_match = re.search(r'\breplaces\s*:\s*(\[[\s\S]*?\]|[\'"`][\s\S]*?[\'"`])', block)
-                if rep_match:
-                    raw_rep = rep_match.group(1)
-                    items = re.findall(r'[\'"`](.*?)[\'"`]', raw_rep)
-                    replaces_str = ", ".join(items)
-                
-                # 3. URL
-                url_str = ""
-                url_match = re.search(r'\b(?:url|website|link)\s*:\s*([\'"`])(.*?)\1', block, re.IGNORECASE)
-                if url_match:
-                    url_str = url_match.group(2).strip()
-                
-                all_alternatives.append({
-                    "name": name,
-                    "replaces": replaces_str,
-                    "url": url_str
-                })
+                for block in blocks:
+                    name = parse_field(block, ['name'])
+                    if not name:
+                        continue  # Kein Name -> kein gültiger Eintrag
+                    
+                    replaces = parse_field(block, ['replaces'])
+                    url_str = parse_field(block, ['url', 'website', 'link'])
+                    
+                    all_alternatives.append({
+                        "name": name,
+                        "replaces": replaces,
+                        "url": url_str
+                    })
         except Exception as e:
-            st.error(f"Systemfehler in {file_name}: {e}")
+            st.error(f"Fehler beim Parsen von {file_name}: {e}")
             
     return all_alternatives
 
-# --- UI ---
+# --- User Interface ---
 st.title("🇪🇺 Digitaler Souveränitäts-Check")
 st.write("Finde europäische Alternativen zu US-Software.")
 
