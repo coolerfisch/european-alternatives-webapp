@@ -1,98 +1,66 @@
 import streamlit as st
 import requests
+import re
+import json
 
-# Konfiguration des Repositories
-REPO_OWNER = "TheMorpheus407"
-REPO_NAME = "european-alternatives"
-API_TREE_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/git/trees/main?recursive=1"
-RAW_BASE_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/"
+# Neue Pfade basierend auf deiner src-Struktur
+REPO_BASE = "https://raw.githubusercontent.com/TheMorpheus407/european-alternatives/main/src/data/"
+FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
 
 st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
 
-# Lade-Funktion mit Caching (Daten werden 1 Stunde gespeichert)
 @st.cache_data(ttl=3600)
-def indexiere_repository():
-    try:
-        # 1. Rufe den kompletten Verzeichnisbaum des Repositories ab
-        tree_response = requests.get(API_TREE_URL)
-        if tree_response.status_code != 200:
-            return []
-        
-        tree = tree_response.json().get("tree", [])
-        
-        # 2. Filtere alle Markdown-Dateien (ausser Templates)
-        md_files = [f["path"] for f in tree if f["path"].endswith(".md") and "ISSUE" not in f["path"]]
-        
-        alle_eintraege = []
-        
-        # 3. Lade jede Datei herunter und parse die Inhalte
-        for file_path in md_files:
-            raw_url = RAW_BASE_URL + file_path
-            file_resp = requests.get(raw_url)
-            
-            if file_resp.status_code == 200:
-                content = file_resp.text
-                kategorie = file_path.split("/")[-1].replace(".md", "").capitalize()
-                
-                # Sehr toleranter Parser fuer Markdown-Tabellen
-                lines = content.split("\n")
-                for line in lines:
-                    # Suche nach Tabellenzeilen (enthalten '|')
-                    if "|" in line and "---" not in line and "Alternative" not in line:
-                        # Spalten extrahieren und leere bereinigen
-                        parts = [p.strip() for p in line.split("|") if p.strip()]
-                        
-                        # Eine gueltige Datenzeile hat meist mindestens 2 Spalten
-                        if len(parts) >= 2:
-                            alle_eintraege.append({
-                                "Name": parts[0],
-                                "Details": " | ".join(parts[1:]),
-                                "Kategorie": kategorie,
-                                "Datei": file_path
-                            })
-                            
-        return alle_eintraege
-    except Exception as e:
-        st.error(f"Fehler beim Indexieren: {e}")
-        return []
+def fetch_ts_data():
+    all_alternatives = []
+    for file_name in FILES:
+        url = REPO_BASE + file_name
+        resp = requests.get(url)
+        if resp.status_code == 200:
+            # Extrahiere den Inhalt zwischen den eckigen Klammern [ ... ]
+            # Da es TS ist, nutzen wir einen groben Regex-Match für die Objekte
+            content = resp.text
+            # Suche nach Objekten wie { name: "...", replaces: "..." }
+            matches = re.findall(r'\{[\s\S]*?\}', content)
+            for m in matches:
+                # Bereinigen der TS-Syntax zu fast-JSON
+                clean = m.replace('name:', '"name":').replace('replaces:', '"replaces":').replace('description:', '"description":').replace('url:', '"url":').replace("'", '"')
+                try:
+                    # Versuche es als Dictionary zu laden (vereinfacht)
+                    name = re.search(r'name:\s*["\'](.*?)["\']', m)
+                    replaces = re.search(r'replaces:\s*\[(.*?)\]', m)
+                    desc = re.search(r'description:\s*["\'](.*?)["\']', m)
+                    
+                    if name:
+                        all_alternatives.append({
+                            "name": name.group(1),
+                            "replaces": replaces.group(1) if replaces else "",
+                            "description": desc.group(1) if desc else ""
+                        })
+                except:
+                    continue
+    return all_alternatives
 
-# App Interface
-st.title("Digitaler Souveraenitaets-Navigator")
-st.write("Diese App indexiert live das gesamte GitHub-Repository und macht alle Tabellen durchsuchbar.")
+st.title("Digitaler Souveraenitaets-Check")
+st.write("Live-Abfrage der src/data Komponenten")
 
-# Daten laden
-datenbank = indexiere_repository()
+data = fetch_ts_data()
 
-if not datenbank:
-    st.warning("Lade Daten oder das Repository ist gerade nicht erreichbar...")
-else:
-    # Suchfeld
-    suchbegriff = st.text_input("Dienst oder Stichwort suchen (z.B. WhatsApp, Cloud, Mail):", placeholder="Suchbegriff eingeben...").lower()
+query = st.text_input("Suche nach US-Dienst:", placeholder="z.B. WhatsApp")
+
+if query:
+    q = query.lower()
+    results = [d for d in data if q in d["replaces"].lower() or q in d["name"].lower()]
     
-    if suchbegriff:
-        # Durchsuche alle extrahierten Felder nach dem Begriff
-        treffer = [d for d in datenbank if suchbegriff in d["Name"].lower() or suchbegriff in d["Details"].lower() or suchbegriff in d["Kategorie"].lower()]
-        
-        if treffer:
-            st.success(f"{len(treffer)} Ergebnisse gefunden:")
-            for t in treffer:
-                with st.container():
-                    st.markdown(f"**{t['Name']}** (Kategorie: {t['Kategorie']})")
-                    st.write(f"Infos & Links: {t['Details']}")
-                    st.caption(f"Gefunden in: {t['Datei']}")
-                    st.write("---")
-        else:
-            # Der "Joerg-Filter" greift auch hier weiterhin
-            if "telegram" in suchbegriff:
-                st.error("Telegram ist gemaess der Projekt-Kriterien nicht gelistet (Sitz in Dubai, proprietärer Server-Code).")
-                st.write("Wir empfehlen stattdessen: Threema oder Session.")
-            else:
-                st.info("Kein direkter Treffer. Eventuell wurde dieser Dienst noch nicht in die Tabellen aufgenommen.")
+    if results:
+        for r in results:
+            st.success(f"Empfehlung: {r['name']}")
+            st.write(f"Ersetzt: {r['replaces']}")
+            st.write(r['description'])
+            st.divider()
+    else:
+        st.info("Kein Treffer in den TS-Datenquellen gefunden.")
 
-# Seitenleiste
 with st.sidebar:
-    st.header("Über das Tool")
-    st.write("Dieses Tool durchsucht automatisch ALLE Markdown-Dateien im Repository nach eingetragenen Alternativen.")
-    st.write("---")
-    st.write(f"Datenquelle: [{REPO_OWNER}/{REPO_NAME}](https://github.com/{REPO_OWNER}/{REPO_NAME})")
-    st.write("Mitwirkender: coolerfisch")
+    st.write("Projekt: European Alternatives")
+    st.write("Quelle: src/data/ (TypeScript Dataset)")
+    st.write("Status: coolerfisch UI")
