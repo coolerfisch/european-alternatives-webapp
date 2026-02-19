@@ -10,21 +10,16 @@ FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
 st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
 
 def extract_top_level_objects(text: str) -> list[str]:
-    """
-    Sucht das äußere Array [...] und extrahiert nur die darin liegenden
-    Top-Level-Objekte { ... }. Ignoriert verschachtelte Sub-Objekte.
-    """
-    # Erst das äußere Array [...] finden (hinter dem Gleichheitszeichen)
+    # Sucht das Haupt-Array hinter dem Gleichheitszeichen
     array_match = re.search(r'=\s*\[', text)
-    if not array_match:
-        return []
+    if not array_match: return []
     
-    start_pos = array_match.end() - 1  # Position des '['
+    start_pos = array_match.end() - 1
     text_segment = text[start_pos:]
     
     objects = []
-    depth = 0        # Trackt eckige Klammern [ ]
-    brace_depth = 0  # Trackt geschweifte Klammern { }
+    depth = 0
+    brace_depth = 0
     start = -1
     in_string = False
     string_char = None
@@ -32,8 +27,6 @@ def extract_top_level_objects(text: str) -> list[str]:
 
     while i < len(text_segment):
         char = text_segment[i]
-
-        # String-Handling (Escapes ignorieren)
         if not in_string and char in ('"', "'", '`'):
             in_string = True
             string_char = char
@@ -43,49 +36,22 @@ def extract_top_level_objects(text: str) -> list[str]:
                 continue
             if char == string_char:
                 in_string = False
-
-        # Klammern nur außerhalb von Strings zählen
+        
         if not in_string:
-            if char == '[':
-                depth += 1
+            if char == '[': depth += 1
             elif char == ']':
                 depth -= 1
-                if depth == 0: break # Ende des Haupt-Arrays erreicht
-            
+                if depth == 0: break
             elif char == '{':
-                # Ein neues Objekt beginnt nur, wenn wir direkt im Haupt-Array sind (depth == 1)
-                if brace_depth == 0 and depth == 1:
-                    start = i
+                if brace_depth == 0 and depth == 1: start = i
                 brace_depth += 1
-            
             elif char == '}':
                 brace_depth -= 1
-                # Ein Objekt ist fertig, wenn wir zurück auf die erste Klammer-Ebene fallen
                 if brace_depth == 0 and start != -1:
                     objects.append(text_segment[start:i+1])
                     start = -1
         i += 1
-
     return objects
-
-def parse_value(raw: str) -> str:
-    raw = raw.strip().rstrip(',')
-    if raw.startswith('['):
-        items = re.findall(r'[\'"`]([^\'"`]+)[\'"`]', raw)
-        return ', '.join(items)
-    m = re.match(r'^[\'"`]([\s\S]*?)[\'"`]$', raw)
-    if m:
-        return m.group(1).strip()
-    return ""
-
-def parse_field(block: str, keys: list[str]) -> str:
-    for key in keys:
-        # Sucht den Key am Zeilenanfang innerhalb des isolierten Blocks
-        pattern = rf'^\s*{key}\s*:\s*(.+?)(?=,?\s*\n\s*\w+\s*:|,?\s*\n?\s*\}})'
-        m = re.search(pattern, block, re.MULTILINE | re.DOTALL)
-        if m:
-            return parse_value(m.group(1))
-    return ""
 
 @st.cache_data(ttl=3600)
 def fetch_and_parse_ts():
@@ -95,41 +61,54 @@ def fetch_and_parse_ts():
         url = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/src/data/{file_name}"
         try:
             resp = requests.get(url)
-            if resp.status_code == 200:
-                text = resp.text
-                blocks = extract_top_level_objects(text)
+            if resp.status_code != 200: continue
+            
+            blocks = extract_top_level_objects(resp.text)
+            
+            for block in blocks:
+                # --- FLEXIBLER PARSER PRO BLOCK ---
+                # 1. Name extrahieren
+                name_m = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', block)
+                if not name_m: continue
+                name = name_m.group(1)
                 
-                # --- Diagnose-Ausgabe (kann später entfernt werden) ---
-                # st.sidebar.write(f"DEBUG: {file_name} -> {len(blocks)} Blöcke")
+                # 2. Replaces extrahieren (Array oder String)
+                replaces_list = []
+                # Sucht nach: replaces: [ ... ]
+                rep_match = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
+                if rep_match:
+                    replaces_list = re.findall(r'[\'"`](.*?)[\'"`]', rep_match.group(1))
+                else:
+                    # Fallback: replaces: "string"
+                    single_rep = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
+                    if single_rep: replaces_list = [single_rep.group(1)]
                 
-                for block in blocks:
-                    name = parse_field(block, ['name'])
-                    if not name: continue
-                    
-                    replaces = parse_field(block, ['replaces'])
-                    url_str = parse_field(block, ['url', 'website', 'link'])
-                    
-                    all_alternatives.append({
-                        "name": name,
-                        "replaces": replaces,
-                        "url": url_str
-                    })
-        except Exception as e:
-            st.error(f"Fehler in {file_name}: {e}")
+                # 3. URL extrahieren
+                url_m = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', block, re.IGNORECASE)
+                url_val = url_m.group(1) if url_m else ""
+                
+                all_alternatives.append({
+                    "name": name,
+                    "replaces": ", ".join(replaces_list),
+                    "url": url_val
+                })
+        except:
+            continue
             
     return all_alternatives
 
 # --- UI ---
 st.title("🇪🇺 Digitaler Souveränitäts-Check")
-st.write("Präzises Parsing der European Alternatives Daten.")
+st.write("Live-Daten aus dem European Alternatives Projekt.")
 
 data = fetch_and_parse_ts()
 
 if data:
-    query = st.text_input("Suche nach US-Dienst (z.B. OneDrive, Outlook, WhatsApp):", placeholder="Stichwort eingeben...")
+    query = st.text_input("Suche (z.B. OneDrive, Outlook, WhatsApp):", placeholder="Stichwort...")
 
     if query:
         q = query.lower().strip()
+        # Wir durchsuchen jetzt explizit Name UND das Replaces-Feld
         results = [d for d in data if q in d["name"].lower() or q in d["replaces"].lower()]
         
         if results:
@@ -149,5 +128,4 @@ with st.sidebar:
     st.header("Statistik")
     st.write(f"Indexierte Dienste: **{len(data)}**")
     st.write("---")
-    st.markdown("[GitHub Repository](https://github.com/TheMorpheus407/european-alternatives)")
     st.write("Mitwirkender: coolerfisch")
