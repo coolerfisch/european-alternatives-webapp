@@ -20,44 +20,61 @@ def fetch_and_parse_ts():
             if resp.status_code != 200:
                 continue
                 
-            content = resp.text
+            lines = resp.text.split('\n')
+            current_item = {}
+            in_replaces_array = False
             
-            # Die robusteste Methode: Wir splitten an JEDER geschweiften Klammer {
-            # Damit haben wir jeden Dienst sicher isoliert, egal wie er formatiert ist.
-            blocks = content.split('{')
-            
-            for block in blocks:
-                # 1. Name
-                name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', block)
-                if not name_match:
-                    continue # Wenn kein Name drin ist, ist es kein Dienst
-                name = name_match.group(1).strip()
+            for line in lines:
+                # 1. Name: Startet ein neues Objekt
+                name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
+                if name_match:
+                    if 'name' in current_item:
+                        # Vorheriges Element abschließen und speichern
+                        current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
+                        all_alternatives.append(current_item)
+                    
+                    # Neues Element initialisieren
+                    current_item = {
+                        'name': name_match.group(1),
+                        'replaces_list': [],
+                        'url': ''
+                    }
+                    in_replaces_array = False
+                    continue
                 
-                # 2. Replaces (Sucht in Arrays ODER in einfachen Strings)
-                replaces_str = ""
-                rep_match = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
-                if rep_match:
-                    items = re.findall(r'[\'"`](.*?)[\'"`]', rep_match.group(1))
-                    replaces_str = ", ".join(items)
-                else:
-                    rep_single = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
-                    if rep_single:
-                        replaces_str = rep_single.group(1)
+                # 2. Replaces: Start der Liste oder Einzeiler
+                if 'replaces' in line and not in_replaces_array:
+                    # Finde den Doppelpunkt und nimm alle Strings in Anführungszeichen danach
+                    colon_idx = line.find(':')
+                    if colon_idx != -1:
+                        items = re.findall(r'[\'"`](.*?)[\'"`]', line[colon_idx:])
+                        current_item.setdefault('replaces_list', []).extend(items)
+                    
+                    # Prüfen, ob ein Array geöffnet, aber nicht geschlossen wird
+                    if '[' in line and ']' not in line:
+                        in_replaces_array = True
+                    continue
                 
-                # 3. URL
-                url_str = ""
-                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', block, re.IGNORECASE)
+                # 3. Replaces: Mehrzeilige Arrays abarbeiten
+                if in_replaces_array:
+                    items = re.findall(r'[\'"`](.*?)[\'"`]', line)
+                    current_item.setdefault('replaces_list', []).extend(items)
+                    if ']' in line:
+                        in_replaces_array = False
+                    continue
+                
+                # 4. URL
+                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', line, re.IGNORECASE)
                 if url_match:
-                    url_str = url_match.group(1).strip()
-                
-                # Ohne Beschreibung!
-                all_alternatives.append({
-                    "name": name,
-                    "replaces": replaces_str,
-                    "url": url_str
-                })
-        except Exception:
-            continue
+                    current_item['url'] = url_match.group(1)
+
+            # Letztes Element der Datei speichern
+            if 'name' in current_item:
+                current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
+                all_alternatives.append(current_item)
+
+        except Exception as e:
+            st.error(f"Fehler beim Parsen von {file_name}: {e}")
             
     return all_alternatives
 
@@ -72,7 +89,7 @@ if data:
 
     if query:
         q = query.lower().strip()
-        # Suche jetzt nur noch in Name und Replaces
+        # Suche durchsucht Name und Replaces
         results = [d for d in data if 
                    q in d["name"].lower() or 
                    q in d["replaces"].lower()]
