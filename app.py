@@ -9,6 +9,59 @@ FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
 
 st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
 
+def extract_ts_objects(text):
+    """
+    Compiler-ähnlicher Tokenizer: Zählt geschweifte Klammern, um verschachtelte 
+    TypeScript-Objekte sicher und isoliert zu extrahieren.
+    """
+    objects = []
+    brace_level = 0
+    in_string = False
+    string_char = ''
+    current_obj = []
+    
+    # Finde den Start des Haupt-Arrays
+    start_idx = text.find('[')
+    if start_idx == -1: return []
+    
+    skip_next = False
+    
+    for char in text[start_idx:]:
+        if skip_next:
+            if brace_level > 0: current_obj.append(char)
+            skip_next = False
+            continue
+            
+        if char == '\\':
+            if brace_level > 0: current_obj.append(char)
+            skip_next = True
+            continue
+
+        if char in ("'", '"', '`'):
+            if not in_string:
+                in_string = True
+                string_char = char
+            elif char == string_char:
+                in_string = False
+            if brace_level > 0: current_obj.append(char)
+            continue
+
+        if not in_string:
+            if char == '{':
+                brace_level += 1
+            
+            if brace_level > 0:
+                current_obj.append(char)
+                
+            if char == '}':
+                brace_level -= 1
+                if brace_level == 0 and current_obj:
+                    # Ein vollständiges, isoliertes Objekt wurde gefunden
+                    objects.append("".join(current_obj))
+                    current_obj = []
+                    
+    return objects
+
 @st.cache_data(ttl=3600)
 def fetch_and_parse_ts():
     all_alternatives = []
@@ -22,22 +75,17 @@ def fetch_and_parse_ts():
                 
             text = resp.text
             
-            # Finde die exakten Startpositionen jedes "name:" Eintrags im Text
-            pattern_name = re.compile(r'\bname\s*:\s*([\'"`])(.*?)\1')
-            matches = list(pattern_name.finditer(text))
+            # Zerlege den Code in saubere Blöcke mittels Tokenizer
+            blocks = extract_ts_objects(text)
             
-            # Iteriere durch alle gefundenen Namen
-            for i in range(len(matches)):
-                # Ein Block geht von diesem "name:" bis zum Start des nächsten
-                start_idx = matches[i].start()
-                end_idx = matches[i+1].start() if i + 1 < len(matches) else len(text)
+            for block in blocks:
+                # 1. Name: Sucht nun sicher im isolierten Block
+                name_match = re.search(r'\bname\s*:\s*[\'"`](.*?)[\'"`]', block)
+                if not name_match:
+                    continue
+                name = name_match.group(1).strip()
                 
-                block = text[start_idx:end_idx]
-                
-                # 1. Name (bereits durch den Match extrahiert)
-                name = matches[i].group(2).strip()
-                
-                # 2. Replaces (Sucht Listen oder einzelne Strings in diesem Block)
+                # 2. Replaces: Greift Arrays oder Einzelstrings
                 replaces_str = ""
                 rep_match = re.search(r'\breplaces\s*:\s*(\[[\s\S]*?\]|[\'"`][\s\S]*?[\'"`])', block)
                 if rep_match:
@@ -57,7 +105,7 @@ def fetch_and_parse_ts():
                     "url": url_str
                 })
         except Exception as e:
-            st.error(f"Systemfehler in Datei {file_name}: {e}")
+            st.error(f"Systemfehler in {file_name}: {e}")
             
     return all_alternatives
 
