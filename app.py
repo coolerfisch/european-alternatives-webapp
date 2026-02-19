@@ -1,12 +1,10 @@
 import streamlit as st
 import requests
 import re
-import json
 
 # --- Konfiguration ---
 REPO_BASE = "https://raw.githubusercontent.com/TheMorpheus407/european-alternatives/main/src/data"
 FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
-CAT_FILE = "categories.ts"
 TRUST_FILE = "trustOverrides.ts"
 US_VENDOR_FILE = "usVendors.ts"
 
@@ -37,8 +35,8 @@ def extract_field(block, field_name):
 
 # --- Daten-Loader ---
 @st.cache_data(ttl=3600)
-def load_full_intelligence():
-    # 1. US Vendors & Profiles laden
+def load_data():
+    # 1. US Vendor Profile (für Risiko-Analyse)
     resp_us = requests.get(f"{REPO_BASE}/{US_VENDOR_FILE}")
     us_profiles = {}
     if resp_us.status_code == 200:
@@ -55,55 +53,46 @@ def load_full_intelligence():
                     "warnings": res_matches
                 }
 
-    # 2. Kategorien & US-Giant Mapping
-    resp_cat = requests.get(f"{REPO_BASE}/{CAT_FILE}")
-    us_giant_to_cat, cat_info = {}, {}
-    if resp_cat.status_code == 200:
-        for b in parse_wild_ts_objects(resp_cat.text):
-            cid = extract_field(b, 'id')
-            if cid:
-                cat_info[cid] = {"name": extract_field(b, 'name'), "emoji": extract_field(b, 'emoji')}
-                giants = re.search(r'usGiants\s*:\s*\[(.*?)\]', b, re.DOTALL)
-                if giants:
-                    for g in re.findall(r'[\'"`](.*?)[\'"`]', giants.group(1)):
-                        us_giant_to_cat[g.lower()] = cid
-
-    # 3. Europäische Alternativen & Trust Scores
+    # 2. Trust Scores der europäischen Alternativen
     resp_trust = requests.get(f"{REPO_BASE}/{TRUST_FILE}")
     eu_scores = {m[0]: float(m[1]) for m in re.findall(r'[\'"]?([\w-]+)[\'"]?\s*:\s*(\d+\.?\d*)', resp_trust.text)} if resp_trust.status_code == 200 else {}
     
+    # 3. Die Alternativen selbst
     alternatives = []
+    ids_seen = set()
     for f in FILES:
         resp = requests.get(f"{REPO_BASE}/{f}")
         if resp.status_code == 200:
             for b in parse_wild_ts_objects(resp.text):
                 aid = extract_field(b, 'id')
-                if aid:
+                if aid and aid not in ids_seen:
                     de_desc = re.search(r'de\s*:\s*[\'"`](.*?)[\'"`]', b, re.DOTALL)
                     replaces = re.search(r'replacesUS\s*:\s*\[(.*?)\]', b, re.DOTALL)
                     alternatives.append({
-                        "id": aid, "name": extract_field(b, 'name'),
-                        "country": extract_field(b, 'country'), "category": extract_field(b, 'category'),
+                        "id": aid,
+                        "name": extract_field(b, 'name'),
+                        "country": extract_field(b, 'country'),
                         "desc": de_desc.group(1) if de_desc else extract_field(b, 'description'),
                         "website": extract_field(b, 'website') or extract_field(b, 'url'),
                         "replaces": re.findall(r'[\'"`](.*?)[\'"`]', replaces.group(1)) if replaces else [],
                         "score": eu_scores.get(aid, 0.0)
                     })
-    return alternatives, cat_info, us_giant_to_cat, us_profiles
+                    ids_seen.add(aid)
+    return alternatives, us_profiles
 
 # Daten laden
-alternatives, cat_info, us_to_cat, us_profiles = load_full_intelligence()
+alternatives, us_profiles = load_data()
 
 # --- UI MAIN ---
 st.title("🇪🇺 European Alternatives")
-st.markdown("Finde souveräne Software-Lösungen für dein digitales Leben.")
+st.markdown("Souveräne Software-Lösungen für dein digitales Leben.")
 
 query = st.text_input("Suche nach US-Dienst (z.B. OneDrive, Gmail, Facebook):", placeholder="Was möchtest du ersetzen?")
 
 if query:
     q = query.lower().strip()
-    mapped_cat = us_to_cat.get(q)
     
+    # Risiko-Analyse (Mapping OneDrive -> Microsoft)
     profile_key = "microsoft" if q == "onedrive" else q
     if profile_key in us_profiles:
         p = us_profiles[profile_key]
@@ -114,7 +103,8 @@ if query:
                 st.markdown("**Bekannte Probleme:**")
                 for w in p['warnings'][:3]: st.write(f"• {w}")
 
-    results = [a for a in alternatives if q in a['name'].lower() or any(q in r.lower() for r in a['replaces']) or (mapped_cat and a['category'] == mapped_cat)]
+    # Ergebnisse filtern
+    results = [a for a in alternatives if q in a['name'].lower() or any(q in r.lower() for r in a['replaces'])]
 
     if results:
         st.subheader("🛡️ Empfohlene europäische Lösungen")
@@ -130,16 +120,11 @@ if query:
         st.info("Keine direkten Treffer gefunden.")
 else:
     st.info("Tippe oben einen US-Dienst ein, um europäische Alternativen zu finden.")
-    st.markdown("#### Kategorien durchstöbern")
-    cols = st.columns(3)
-    for i, (cid, info) in enumerate(list(cat_info.items())[:6]):
-        cols[i % 3].button(f"{info['emoji']} {info['name']}", key=cid)
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.header("📊 Statistik")
-    st.write(f"Dienste: **{len(alternatives)}**")
-    st.write(f"Kategorien: **{len(cat_info)}**")
+    st.write(f"Dienste geladen: **{len(alternatives)}**")
     
     st.write("---")
     st.header("🔗 Quellen & Code")
