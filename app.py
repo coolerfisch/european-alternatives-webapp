@@ -22,39 +22,40 @@ def fetch_and_parse_ts():
                 
             content = resp.text
             
-            # Wir splitten jetzt einfach bei jedem Vorkommen von 'name:', 
-            # egal ob am Zeilenanfang oder mitten im Text.
-            blocks = re.split(r'name\s*:\s*', content)
+            # ZURÜCK ZUM 111-DIENSTE-SPLITTER: 
+            # Teilt nur sauber an echten Objekt-Anfängen (Zeilenanfang + name:)
+            blocks = re.split(r'(?m)^\s*(?:["\']?name["\']?)\s*:\s*', content)
             
             for block in blocks[1:]:
-                # 1. Name: Erster Text in Anführungszeichen nach dem Split
-                name_match = re.search(r'[\'"`](.*?)[\'"`]', block)
+                # 1. Name
+                name_match = re.search(r'^([\'"`])(.*?)\1', block)
                 if not name_match: continue
-                name = name_match.group(1).strip()
+                name = name_match.group(2).strip()
                 
-                # 2. Replaces: Sucht nach dem Inhalt von eckigen Klammern ODER Anführungszeichen
+                # 2. Replaces (Bulletproof für Listen UND einzelne Strings)
                 replaces_str = ""
-                rep_match = re.search(r'replaces\s*:\s*\[([\s\S]*?)\]', block)
+                rep_match = re.search(r'["\']?replaces["\']?\s*:\s*(\[.*?\]|[\'"`].*?[\'"`])', block, re.DOTALL)
                 if rep_match:
-                    items = re.findall(r'[\'"`](.*?)[\'"`]', rep_match.group(1))
-                    replaces_str = ", ".join(items)
-                else:
-                    # Fallback auf einfachen String
-                    rep_single = re.search(r'replaces\s*:\s*[\'"`](.*?)[\'"`]', block)
-                    if rep_single:
-                        replaces_str = rep_single.group(1)
+                    raw_replaces = rep_match.group(1)
+                    # Alle Begriffe in Anführungszeichen rausziehen
+                    items = re.findall(r'[\'"`](.*?)[\'"`]', raw_replaces)
+                    if items:
+                        replaces_str = ", ".join(items)
+                    else:
+                        # Fallback für Listen ohne Anführungszeichen
+                        replaces_str = re.sub(r'[\[\]]', '', raw_replaces).strip()
                 
-                # 3. Description: Sucht nach description: gefolgt von beliebigem Text in Anführungszeichen
+                # 3. Description (Mehrzeilen-Modus)
                 desc_str = ""
-                desc_match = re.search(r'description\s*:\s*([\'"`])([\s\S]*?)\1', block)
+                desc_match = re.search(r'["\']?(?:description|desc|notes|info)["\']?\s*:\s*([\'"`])([\s\S]*?)\1', block, re.IGNORECASE)
                 if desc_match:
                     desc_str = re.sub(r'\s+', ' ', desc_match.group(2)).strip()
                 
                 # 4. URL
                 url_str = ""
-                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', block, re.IGNORECASE)
+                url_match = re.search(r'["\']?(?:url|website|link)["\']?\s*:\s*([\'"`])(.*?)\1', block, re.IGNORECASE)
                 if url_match:
-                    url_str = url_match.group(1)
+                    url_str = url_match.group(2).strip()
                 
                 all_alternatives.append({
                     "name": name,
@@ -74,11 +75,11 @@ st.write("Durchsuche europäische Alternativen zu US-Software.")
 data = fetch_and_parse_ts()
 
 if data:
-    query = st.text_input("Suche nach Dienst oder Schlagwort (z.B. OneDrive, Cloud, WhatsApp):", placeholder="Stichwort eingeben...")
+    query = st.text_input("Suche nach Dienst (z.B. OneDrive, Outlook, Cloud, WhatsApp):", placeholder="Stichwort eingeben...")
 
     if query:
         q = query.lower().strip()
-        # Die ultimative Suche: Findet den Begriff in JEDEM Feld
+        # ULTIMATIVE SUCHE: Durchsucht Name, Replaces UND Beschreibung
         results = [d for d in data if 
                    q in d["name"].lower() or 
                    q in d["replaces"].lower() or 
