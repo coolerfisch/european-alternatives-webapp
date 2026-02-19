@@ -30,7 +30,6 @@ def fetch_and_parse_ts():
                 # 1. Name
                 name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
                 if name_match:
-                    # Vorheriges Element speichern, wenn ein neuer Name beginnt
                     if 'name' in current_item:
                         current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
                         all_alternatives.append(current_item)
@@ -64,12 +63,12 @@ def fetch_and_parse_ts():
                 if desc_match:
                     current_item['description'] = desc_match.group(1)
 
-                # 4. URL
-                url_match = re.search(r'url\s*:\s*[\'"`](.*?)[\'"`]', line)
+                # 4. URL / Website / Link (Erweitertes Netz)
+                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', line, re.IGNORECASE)
                 if url_match:
                     current_item['url'] = url_match.group(1)
 
-            # Letztes Element der Datei abspeichern
+            # Letztes Element
             if 'name' in current_item:
                 current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
                 all_alternatives.append(current_item)
@@ -102,8 +101,9 @@ else:
                     st.write(f"**Ersetzt:** {r['replaces']}")
                     st.write(f"**Details:** {r['description']}")
                     
+                    # Hier wird der Button generiert, falls eine URL vorliegt
                     if r.get('url'):
-                        st.link_button("Zur Webseite", r['url'])
+                        st.link_button("🌐 Zur Webseite", r['url'])
                         
                     st.divider()
         else:
