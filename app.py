@@ -20,25 +20,28 @@ def fetch_and_parse_ts():
             if resp.status_code != 200:
                 continue
                 
-            content = resp.text
+            text = resp.text
             
-            # Wir splitten den Text exakt am Schlüsselwort "name:"
-            # Das Wort "\bname" stellt sicher, dass es ein eigenständiges Wort ist.
-            blocks = re.split(r'\bname\s*:\s*', content)
+            # Finde die exakten Startpositionen jedes "name:" Eintrags im Text
+            pattern_name = re.compile(r'\bname\s*:\s*([\'"`])(.*?)\1')
+            matches = list(pattern_name.finditer(text))
             
-            for block in blocks[1:]:
-                # 1. Name: Da wir bei "name:" gesplittet haben, steht der Name direkt am Anfang
-                name_match = re.search(r'^([\'"`])(.*?)\1', block)
-                if not name_match:
-                    continue
-                name = name_match.group(2).strip()
+            # Iteriere durch alle gefundenen Namen
+            for i in range(len(matches)):
+                # Ein Block geht von diesem "name:" bis zum Start des nächsten
+                start_idx = matches[i].start()
+                end_idx = matches[i+1].start() if i + 1 < len(matches) else len(text)
                 
-                # 2. Replaces: Zieht Arrays [...] oder einzelne Strings "..." heraus (auch über mehrere Zeilen)
+                block = text[start_idx:end_idx]
+                
+                # 1. Name (bereits durch den Match extrahiert)
+                name = matches[i].group(2).strip()
+                
+                # 2. Replaces (Sucht Listen oder einzelne Strings in diesem Block)
                 replaces_str = ""
                 rep_match = re.search(r'\breplaces\s*:\s*(\[[\s\S]*?\]|[\'"`][\s\S]*?[\'"`])', block)
                 if rep_match:
                     raw_rep = rep_match.group(1)
-                    # Alle Begriffe in Anführungszeichen aus dem Treffer filtern
                     items = re.findall(r'[\'"`](.*?)[\'"`]', raw_rep)
                     replaces_str = ", ".join(items)
                 
@@ -53,8 +56,8 @@ def fetch_and_parse_ts():
                     "replaces": replaces_str,
                     "url": url_str
                 })
-        except Exception:
-            continue
+        except Exception as e:
+            st.error(f"Systemfehler in Datei {file_name}: {e}")
             
     return all_alternatives
 
