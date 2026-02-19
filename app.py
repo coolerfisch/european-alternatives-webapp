@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import json
 import re
 
 # --- Konfiguration ---
@@ -8,6 +9,22 @@ REPO_NAME = "european-alternatives"
 FILES = ["manualAlternatives.ts", "researchAlternatives.ts"]
 
 st.set_page_config(page_title="European Alternatives Navigator", layout="wide")
+
+def clean_and_parse_json(text):
+    """Extrahiert das JSON-Array aus der TypeScript-Datei."""
+    try:
+        # Finde den Start des Arrays [ und das Ende ]
+        start = text.find('[')
+        end = text.rfind(']') + 1
+        if start == -1 or end == 0:
+            return None
+        
+        json_data = text[start:end]
+        # Entferne potenzielle Trailing Commas, die JSON nicht mag
+        json_data = re.sub(r',\s*([\]}])', r'\1', json_data)
+        return json.loads(json_data)
+    except:
+        return None
 
 @st.cache_data(ttl=3600)
 def fetch_and_parse_ts():
@@ -20,80 +37,79 @@ def fetch_and_parse_ts():
             if resp.status_code != 200:
                 continue
             
-            text = resp.text
+            # 1. Versuch: Sauberes JSON-Parsing (für die generierten Dateien)
+            data = clean_and_parse_json(resp.text)
             
-            # Wir suchen alle "name:" als Ankerpunkte
-            pattern_name = re.compile(r'\bname\s*:\s*([\'"`])(.*?)\1')
-            matches = list(pattern_name.finditer(text))
-            
-            for i in range(len(matches)):
-                start_idx = matches[i].start()
-                end_idx = matches[i+1].start() if i + 1 < len(matches) else len(text)
-                block = text[start_idx:end_idx]
-                
-                name = matches[i].group(2).strip()
-                
-                # --- JETZT MIT DEN KORREKTEN KEYS ---
-                
-                # 1. replacesUS (Das war der Fehler!)
-                replaces_list = []
-                # Sucht nach replacesUS: [...] oder replacesUS: "..."
-                rep_match = re.search(r'replacesUS\s*:\s*(\[[\s\S]*?\]|[\'"`][\s\S]*?[\'"`])', block)
-                if rep_match:
-                    raw_rep = rep_match.group(1)
-                    replaces_list = re.findall(r'[\'"`](.*?)[\'"`]', raw_rep)
-                
-                # 2. URL / Website
-                url_str = ""
-                # Im Code oben sehe ich 'website', wir prüfen zur Sicherheit alles
-                url_match = re.search(r'\b(?:url|website|link)\s*:\s*([\'"`])(.*?)\1', block, re.IGNORECASE)
-                if url_match:
-                    url_str = url_match.group(2).strip()
-                
-                all_alternatives.append({
-                    "name": name,
-                    "replaces": ", ".join(replaces_list),
-                    "url": url_str
-                })
-        except Exception as e:
-            st.error(f"Fehler in {file_name}: {e}")
+            if data and isinstance(data, list):
+                for item in data:
+                    # Extrahiere die deutschen Details, falls vorhanden
+                    desc = item.get("localizedDescriptions", {}).get("de", "")
+                    if not desc:
+                        desc = item.get("description", "Keine Beschreibung verfügbar.")
+                    
+                    all_alternatives.append({
+                        "name": item.get("name", "Unbekannt"),
+                        "replaces": ", ".join(item.get("replacesUS", [])),
+                        "description": desc,
+                        "url": item.get("website", "")
+                    })
+            else:
+                # 2. Fallback: Robuster Regex-Parser (für handgeschriebene Dateien)
+                text = resp.text
+                blocks = re.findall(r'\{[\s\S]*?\}', text)
+                for block in blocks:
+                    name_m = re.search(r'"name"\s*:\s*"(.*?)"', block)
+                    if not name_m: continue
+                    
+                    reps_m = re.search(r'"replacesUS"\s*:\s*\[([\s\S]*?)\]', block)
+                    replaces = ", ".join(re.findall(r'"(.*?)"', reps_m.group(1))) if reps_m else ""
+                    
+                    url_m = re.search(r'"website"\s*:\s*"(.*?)"', block)
+                    
+                    all_alternatives.append({
+                        "name": name_m.group(1),
+                        "replaces": replaces,
+                        "description": "Details im Hauptkatalog verfügbar.",
+                        "url": url_m.group(1) if url_m else ""
+                    })
+                    
+        except Exception:
+            continue
             
     return all_alternatives
 
 # --- User Interface ---
 st.title("🇪🇺 Digitaler Souveränitäts-Check")
-st.write("Suche nach europäischen Alternativen zu US-Software (OneDrive, Outlook, etc.)")
+st.write("Suche nach europäischen Alternativen (Datenstand: Februar 2026)")
 
 data = fetch_and_parse_ts()
 
 if data:
-    # Suchfeld
-    query = st.text_input("Welchen US-Dienst möchtest du ersetzen?", placeholder="z.B. OneDrive oder Outlook...")
+    query = st.text_input("Welchen US-Dienst möchtest du ersetzen?", placeholder="z.B. OneDrive, Outlook, LastPass...")
 
     if query:
         q = query.lower().strip()
-        # Suche in Name und in der (jetzt korrekten) Replaces-Liste
         results = [d for d in data if q in d["name"].lower() or q in d["replaces"].lower()]
         
         if results:
-            st.success(f"{len(results)} Treffer für '{query}' gefunden:")
+            st.success(f"{len(results)} Treffer gefunden:")
             for r in results:
                 with st.container():
                     st.markdown(f"### {r['name']}")
                     if r['replaces']:
                         st.write(f"**Ersetzt:** {r['replaces']}")
+                    st.write(f"**Details:** {r['description']}")
                     
                     if r['url']:
-                        st.link_button("🌐 Zur Webseite", r['url'])
+                        st.link_button(f"🌐 Zu {r['name']}", r['url'])
                     st.divider()
         else:
-            st.info(f"Kein direkter Treffer für '{query}'. Versuche es mit einem allgemeineren Begriff.")
+            st.info(f"Kein Treffer für '{query}'. Tipp: Versuche es mit 'Cloud', 'Email' oder 'Office'.")
 
 with st.sidebar:
     st.header("Statistik")
-    st.write(f"Indexierte Dienste: **{len(data)}**")
+    st.write(f"Dienste im Katalog: **{len(data)}**")
     st.write("---")
-    st.markdown("**Quellcode der App:**")
-    st.markdown("[GitHub: european-alternatives-webapp](https://github.com/coolerfisch/european-alternatives-webapp/)")
+    st.markdown("[App-Quellcode](https://github.com/coolerfisch/european-alternatives-webapp/)")
     st.write("---")
-    st.write("Mitwirkender: coolerfisch")
+    st.write("Status: Live-Daten-Anbindung aktiv.")
