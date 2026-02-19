@@ -23,6 +23,8 @@ def fetch_and_parse_ts():
             lines = resp.text.split('\n')
             current_item = {}
             in_replaces_array = False
+            in_description = False
+            desc_quote_char = ""
             
             for line in lines:
                 line = line.strip()
@@ -38,10 +40,24 @@ def fetch_and_parse_ts():
                     current_item['name'] = name_match.group(1)
                     current_item['replaces_list'] = []
                     current_item['description'] = "Keine Beschreibung verfügbar."
+                    current_item['description_lines'] = []
                     current_item['url'] = ""
+                    in_replaces_array = False
+                    in_description = False
+                    continue
+
+                # 2. Mehrzeilige Beschreibung fortführen
+                if in_description:
+                    if desc_quote_char in line:
+                        # Ende der Beschreibung gefunden (schließendes Anführungszeichen/Backtick)
+                        current_item['description_lines'].append(line.split(desc_quote_char)[0])
+                        current_item['description'] = " ".join(current_item['description_lines']).strip()
+                        in_description = False
+                    else:
+                        current_item['description_lines'].append(line)
                     continue
                 
-                # 2. Replaces Liste
+                # 3. Replaces Liste
                 if 'replaces' in line and '[' in line:
                     inline_items = re.findall(r'[\'"`](.*?)[\'"`]', line[line.find('['):])
                     if inline_items:
@@ -58,17 +74,28 @@ def fetch_and_parse_ts():
                         in_replaces_array = False
                     continue
                 
-                # 3. Description
-                desc_match = re.search(r'description\s*:\s*[\'"`](.*?)[\'"`]', line)
+                # 4. Description Start
+                desc_match = re.search(r'description\s*:\s*(["\'`])(.*)', line)
                 if desc_match:
-                    current_item['description'] = desc_match.group(1)
+                    quote_char = desc_match.group(1)
+                    rest_of_line = desc_match.group(2)
+                    
+                    if quote_char in rest_of_line:
+                        # Einzeilige Beschreibung (öffnet und schließt in derselben Zeile)
+                        current_item['description'] = rest_of_line.split(quote_char)[0]
+                    else:
+                        # Start einer mehrzeiligen Beschreibung
+                        in_description = True
+                        desc_quote_char = quote_char
+                        current_item['description_lines'] = [rest_of_line]
+                    continue
 
-                # 4. URL / Website / Link (Erweitertes Netz)
+                # 5. URL / Website / Link
                 url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', line, re.IGNORECASE)
                 if url_match:
                     current_item['url'] = url_match.group(1)
 
-            # Letztes Element
+            # Letztes Element der Datei abspeichern
             if 'name' in current_item:
                 current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
                 all_alternatives.append(current_item)
@@ -101,9 +128,12 @@ else:
                     st.write(f"**Ersetzt:** {r['replaces']}")
                     st.write(f"**Details:** {r['description']}")
                     
-                    # Hier wird der Button generiert, falls eine URL vorliegt
+                    # Button-Ausgabe
                     if r.get('url'):
-                        st.link_button("🌐 Zur Webseite", r['url'])
+                        # Kleiner Trick mit Streamlit Columns, damit der Button nicht die ganze Breite einnimmt
+                        col1, col2 = st.columns([1, 4])
+                        with col1:
+                            st.link_button("🌐 Zur Webseite", r['url'])
                         
                     st.divider()
         else:
@@ -113,5 +143,8 @@ with st.sidebar:
     st.header("Über das Tool")
     st.write(f"Aktuell indexierte Dienste: **{len(data)}**")
     st.markdown("Dieses Tool parst den Quellcode des [European Alternatives](https://github.com/TheMorpheus407/european-alternatives) Projekts.")
+    st.write("---")
+    st.markdown("**Quellcode dieser App:**")
+    st.markdown("[GitHub: coolerfisch/european-alternatives-webapp](https://github.com/coolerfisch/european-alternatives-webapp/)")
     st.write("---")
     st.write("Mitwirkender: coolerfisch")
