@@ -114,6 +114,6 @@ else:
 with st.sidebar:
     st.header("Über das Tool")
     st.write(f"Aktuell indexierte Dienste: **{len(data)}**")
-    st.write("Dieses Tool parst direkt den TypeScript-Quellcode des Projekts https://github.com/TheMorpheus407/european-alternatives.")
+    st.write("Dieses Tool parst direkt den TypeScript-Quellcode des Projekts [European Alternatives](https://github.com/TheMorpheus407/european-alternatives).")
     st.write("---")
     st.write("Mitwirkender: coolerfisch")
