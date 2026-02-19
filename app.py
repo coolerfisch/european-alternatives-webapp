@@ -48,14 +48,12 @@ def load_full_intelligence():
             if v_id:
                 score = re.search(r'trustScore\s*:\s*(\d+\.?\d*)', b)
                 desc_de = re.search(r'descriptionDe\s*:\s*[\'"`](.*?)[\'"`]', b, re.DOTALL)
+                res_matches = re.findall(r'textDe\s*:\s*[\'"`](.*?)[\'"`]', b, re.DOTALL)
                 us_profiles[v_id] = {
                     "score": float(score.group(1)) if score else 0.0,
                     "desc": desc_de.group(1) if desc_de else "",
-                    "warnings": []
+                    "warnings": res_matches
                 }
-                # Warnungen (Reservations) für US-Anbieter ziehen
-                res_matches = re.findall(r'textDe\s*:\s*[\'"`](.*?)[\'"`]', b, re.DOTALL)
-                us_profiles[v_id]["warnings"] = res_matches
 
     # 2. Kategorien & US-Giant Mapping
     resp_cat = requests.get(f"{REPO_BASE}/{CAT_FILE}")
@@ -96,25 +94,26 @@ def load_full_intelligence():
 # Daten laden
 alternatives, cat_info, us_to_cat, us_profiles = load_full_intelligence()
 
-# --- UI ---
+# --- UI MAIN ---
 st.title("🇪🇺 European Alternatives")
+st.markdown("Finde souveräne Software-Lösungen für dein digitales Leben.")
+
 query = st.text_input("Suche nach US-Dienst (z.B. OneDrive, Gmail, Facebook):", placeholder="Was möchtest du ersetzen?")
 
 if query:
     q = query.lower().strip()
     mapped_cat = us_to_cat.get(q)
     
-    # Anzeige des US-Profils (falls vorhanden)
-    if q in us_profiles or q == "onedrive": # OneDrive Mapping auf Microsoft Profile
-        profile_key = "microsoft" if q == "onedrive" else q
-        if profile_key in us_profiles:
-            p = us_profiles[profile_key]
-            with st.status(f"⚠️ Risiko-Analyse: {query.capitalize()}", expanded=True):
-                st.write(f"**Trust Score:** {p['score']}/10")
-                st.write(p['desc'])
+    profile_key = "microsoft" if q == "onedrive" else q
+    if profile_key in us_profiles:
+        p = us_profiles[profile_key]
+        with st.status(f"⚠️ Risiko-Analyse: {query.capitalize()}", expanded=True):
+            st.write(f"**Trust Score:** {p['score']}/10")
+            st.write(p['desc'])
+            if p['warnings']:
+                st.markdown("**Bekannte Probleme:**")
                 for w in p['warnings'][:3]: st.write(f"• {w}")
 
-    # Alternativen filtern
     results = [a for a in alternatives if q in a['name'].lower() or any(q in r.lower() for r in a['replaces']) or (mapped_cat and a['category'] == mapped_cat)]
 
     if results:
@@ -125,5 +124,34 @@ if query:
                 c1.markdown(f"#### {get_flag(res['country'])} {res['name']}")
                 if res['score'] > 0: c2.metric("Trust", res['score'])
                 st.write(res['desc'])
-                if res['website']: st.link_button(f"Zu {res['name']}", res['website'])
+                if res['website']: st.link_button(f"🌐 Zu {res['name']}", res['website'])
                 st.divider()
+    else:
+        st.info("Keine direkten Treffer gefunden.")
+else:
+    st.info("Tippe oben einen US-Dienst ein, um europäische Alternativen zu finden.")
+    st.markdown("#### Kategorien durchstöbern")
+    cols = st.columns(3)
+    for i, (cid, info) in enumerate(list(cat_info.items())[:6]):
+        cols[i % 3].button(f"{info['emoji']} {info['name']}", key=cid)
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("📊 Statistik")
+    st.write(f"Dienste: **{len(alternatives)}**")
+    st.write(f"Kategorien: **{len(cat_info)}**")
+    
+    st.write("---")
+    st.header("🔗 Quellen & Code")
+    st.markdown("**Datenquelle:**")
+    st.markdown("[GitHub: TheMorpheus407 / European Alternatives](https://github.com/TheMorpheus407/european-alternatives)")
+    
+    st.markdown("**App-Projekt:**")
+    st.markdown("[GitHub: coolerfisch / Web-App](https://github.com/coolerfisch/european-alternatives-webapp/)")
+    
+    st.write("---")
+    st.write("Entwickelt von Martin")
+    
+    if st.button("🔄 Cache aktualisieren"):
+        st.cache_data.clear()
+        st.rerun()
