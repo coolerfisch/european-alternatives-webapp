@@ -20,85 +20,62 @@ def fetch_and_parse_ts():
             if resp.status_code != 200:
                 continue
                 
-            lines = resp.text.split('\n')
-            current_item = {}
-            in_replaces_array = False
-            in_description = False
-            desc_quote_char = ""
+            content = resp.text
             
-            for line in lines:
-                line = line.strip()
+            # Teile den gesamten Text an jedem "name:" auf (Multizeilen-Modus)
+            # Dadurch haben wir für jeden Dienst einen sauberen, isolierten Textblock
+            blocks = re.split(r'(?m)^\s*(?:["\']?name["\']?)\s*:\s*', content)
+            
+            for block in blocks[1:]: # Der erste Block ist nur Datei-Kopf, den überspringen wir
                 
-                # 1. Name
-                name_match = re.search(r'name\s*:\s*[\'"`](.*?)[\'"`]', line)
-                if name_match:
-                    if 'name' in current_item:
-                        current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
-                        all_alternatives.append(current_item)
-                        current_item = {}
-                    
-                    current_item['name'] = name_match.group(1)
-                    current_item['replaces_list'] = []
-                    current_item['description'] = "Keine Beschreibung verfügbar."
-                    current_item['description_lines'] = []
-                    current_item['url'] = ""
-                    in_replaces_array = False
-                    in_description = False
+                # 1. Name extrahieren (steht jetzt immer ganz am Anfang des Blocks)
+                name_match = re.search(r'^([\'"`])(.*?)\1', block)
+                if not name_match:
                     continue
-
-                # 2. Mehrzeilige Beschreibung fortführen
-                if in_description:
-                    if desc_quote_char in line:
-                        # Ende der Beschreibung gefunden (schließendes Anführungszeichen/Backtick)
-                        current_item['description_lines'].append(line.split(desc_quote_char)[0])
-                        current_item['description'] = " ".join(current_item['description_lines']).strip()
-                        in_description = False
-                    else:
-                        current_item['description_lines'].append(line)
-                    continue
+                name = name_match.group(2).strip()
                 
-                # 3. Replaces Liste
-                if 'replaces' in line and '[' in line:
-                    inline_items = re.findall(r'[\'"`](.*?)[\'"`]', line[line.find('['):])
-                    if inline_items:
-                        current_item.setdefault('replaces_list', []).extend(inline_items)
-                    if ']' not in line:
-                        in_replaces_array = True
-                    continue
+                # 2. Replaces (Array) extrahieren
+                replaces_str = ""
+                rep_match = re.search(r'["\']?replaces["\']?\s*:\s*\[(.*?)\]', block, re.DOTALL)
+                if rep_match:
+                    items = re.findall(r'[\'"`](.*?)[\'"`]', rep_match.group(1))
+                    replaces_str = ", ".join(items)
                 
-                if in_replaces_array:
-                    array_items = re.findall(r'[\'"`](.*?)[\'"`]', line)
-                    if array_items:
-                        current_item.setdefault('replaces_list', []).extend(array_items)
-                    if ']' in line:
-                        in_replaces_array = False
-                    continue
+                # 3. Beschreibung extrahieren (extrem fehlertolerant)
+                # Sucht nach description, desc, notes, info oder details
+                desc_str = "Keine Beschreibung verfügbar."
                 
-                # 4. Description Start
-                desc_match = re.search(r'description\s*:\s*(["\'`])(.*)', line)
+                # Variante A: Text in Anführungszeichen/Backticks (auch über mehrere Zeilen)
+                desc_match = re.search(r'(?:description|desc|notes|info|details)\s*:\s*([\'"`])(.*?)\1', block, re.DOTALL | re.IGNORECASE)
                 if desc_match:
-                    quote_char = desc_match.group(1)
-                    rest_of_line = desc_match.group(2)
-                    
-                    if quote_char in rest_of_line:
-                        # Einzeilige Beschreibung (öffnet und schließt in derselben Zeile)
-                        current_item['description'] = rest_of_line.split(quote_char)[0]
-                    else:
-                        # Start einer mehrzeiligen Beschreibung
-                        in_description = True
-                        desc_quote_char = quote_char
-                        current_item['description_lines'] = [rest_of_line]
-                    continue
+                    # Zeilenumbrüche durch Leerzeichen ersetzen für sauberes Layout
+                    raw_desc = desc_match.group(2)
+                    desc_str = re.sub(r'\s+', ' ', raw_desc).strip()
+                else:
+                    # Variante B: Text ohne direkte Anführungszeichen (z.B. hinter einer Funktion)
+                    alt_match = re.search(r'(?:description|desc|notes|info|details)\s*:\s*(.*?)[,\n]', block, re.IGNORECASE)
+                    if alt_match:
+                        raw_val = alt_match.group(1).strip()
+                        # Falls es ein Funktionsaufruf wie t("...") ist, ziehen wir den Text heraus
+                        t_match = re.search(r'[\'"`](.*?)[\'"`]', raw_val)
+                        if t_match:
+                            desc_str = t_match.group(1).strip()
+                        elif raw_val:
+                            desc_str = raw_val
 
-                # 5. URL / Website / Link
-                url_match = re.search(r'(?:url|website|link)\s*:\s*[\'"`](.*?)[\'"`]', line, re.IGNORECASE)
+                # 4. URL / Website / Link extrahieren
+                url_str = ""
+                url_match = re.search(r'(?:url|website|link)\s*:\s*([\'"`])(.*?)\1', block, re.IGNORECASE)
                 if url_match:
-                    current_item['url'] = url_match.group(1)
-
-            # Letztes Element der Datei abspeichern
-            if 'name' in current_item:
-                current_item['replaces'] = ", ".join(current_item.get('replaces_list', []))
-                all_alternatives.append(current_item)
+                    url_str = url_match.group(2).strip()
+                
+                # In Datenbank aufnehmen
+                all_alternatives.append({
+                    "name": name,
+                    "replaces": replaces_str,
+                    "description": desc_str,
+                    "url": url_str
+                })
 
         except Exception as e:
             st.error(f"Fehler beim Parsen von {file_name}: {e}")
@@ -128,9 +105,7 @@ else:
                     st.write(f"**Ersetzt:** {r['replaces']}")
                     st.write(f"**Details:** {r['description']}")
                     
-                    # Button-Ausgabe
                     if r.get('url'):
-                        # Kleiner Trick mit Streamlit Columns, damit der Button nicht die ganze Breite einnimmt
                         col1, col2 = st.columns([1, 4])
                         with col1:
                             st.link_button("🌐 Zur Webseite", r['url'])
